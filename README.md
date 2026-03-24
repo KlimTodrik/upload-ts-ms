@@ -42,6 +42,24 @@ Host ports by default:
 - Manticore SQL/HTTP: `19306` / `19308`
 - Typesense HTTP: `18108`
 
+## GitHub Actions
+
+В репозитории есть workflow `Upload Benchmark`, который:
+
+- поднимает `Manticore` и `Typesense` через `docker compose`
+- запускает benchmark
+- пишет сводку прямо в `GitHub Actions Step Summary`
+- прикладывает сырой `results/*.json` как artifact
+
+По умолчанию CI гоняет `precomputed` режим с локальными эмбеддингами `sentence-transformers/all-MiniLM-L6-v2`.
+
+Параметры для ручного запуска через `workflow_dispatch`:
+
+- `limit`
+- `batch_size`
+- `embed_batch_size`
+- `mode`
+
 ## Примеры
 
 Честное сравнение ingestion:

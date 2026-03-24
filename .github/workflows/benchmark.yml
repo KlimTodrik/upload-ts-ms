@@ -1,0 +1,108 @@
+name: Upload Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Number of FiQA documents to index
+        required: false
+        default: "500"
+      batch_size:
+        description: Insert batch size
+        required: false
+        default: "100"
+      embed_batch_size:
+        description: Embedding batch size
+        required: false
+        default: "64"
+      mode:
+        description: Benchmark mode
+        required: false
+        default: precomputed
+        type: choice
+        options:
+          - precomputed
+          - auto
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: upload-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      LIMIT: ${{ inputs.limit || '500' }}
+      BATCH_SIZE: ${{ inputs.batch_size || '100' }}
+      EMBED_BATCH_SIZE: ${{ inputs.embed_batch_size || '64' }}
+      MODE: ${{ inputs.mode || 'precomputed' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start search engines
+        run: docker compose up -d
+
+      - name: Show container status
+        run: docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+      - name: Run benchmark
+        run: |
+          python scripts/benchmark.py \
+            --mode "$MODE" \
+            --engines both \
+            --limit "$LIMIT" \
+            --batch-size "$BATCH_SIZE" \
+            --embed-batch-size "$EMBED_BATCH_SIZE" \
+            --embed-model sentence-transformers/all-MiniLM-L6-v2
+
+      - name: Build CI summary
+        run: |
+          latest_result="$(ls -t results/benchmark-*.json | head -n 1)"
+          echo "RESULT_JSON=$latest_result" >> "$GITHUB_ENV"
+          python scripts/render_ci_summary.py \
+            --result "$latest_result" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-result-${{ github.run_id }}
+          path: ${{ env.RESULT_JSON }}
+          if-no-files-found: error
+
+      - name: Print benchmark result
+        if: always()
+        run: |
+          if [ -n "$RESULT_JSON" ] && [ -f "$RESULT_JSON" ]; then
+            cat "$RESULT_JSON"
+          fi
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker logs upload-compare-manticore || true
+          docker logs upload-compare-typesense || true
+
+      - name: Stop search engines
+        if: always()
+        run: docker compose down -v
