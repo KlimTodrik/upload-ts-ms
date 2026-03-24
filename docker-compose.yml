@@ -1,0 +1,21 @@
+services:
+  manticore:
+    image: manticoresearch/manticore:latest
+    container_name: upload-compare-manticore
+    ports:
+      - "19306:9306"
+      - "19308:9308"
+    volumes:
+      - ./data/manticore:/var/lib/manticore
+
+  typesense:
+    image: typesense/typesense:30.1
+    container_name: upload-compare-typesense
+    ports:
+      - "18108:8108"
+    command: >
+      --data-dir /data
+      --api-key=xyz
+      --enable-cors
+    volumes:
+      - ./data/typesense:/data

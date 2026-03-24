@@ -1,0 +1,5 @@
+datasets>=2.19.0
+requests>=2.31.0
+sentence-transformers>=3.0.0
+orjson>=3.10.0
+PyMySQL>=1.1.0
