@@ -18,7 +18,7 @@ on:
       mode:
         description: Benchmark mode
         required: false
-        default: precomputed
+        default: auto
         type: choice
         options:
           - precomputed
@@ -43,7 +43,7 @@ jobs:
       LIMIT: ${{ inputs.limit || '57638' }}
       BATCH_SIZE: ${{ inputs.batch_size || '100' }}
       EMBED_BATCH_SIZE: ${{ inputs.embed_batch_size || '64' }}
-      MODE: ${{ inputs.mode || 'precomputed' }}
+      MODE: ${{ inputs.mode || 'auto' }}
 
     steps:
       - name: Checkout

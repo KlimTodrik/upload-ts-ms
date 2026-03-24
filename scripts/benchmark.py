@@ -447,6 +447,11 @@ def main() -> int:
         f"mode={args.mode} engines={args.engines} limit={args.limit} "
         f"batch_size={args.batch_size} embed_batch_size={args.embed_batch_size}"
     )
+    if args.mode == "auto":
+        log(
+            "[run] auto mode enabled; each engine generates embeddings internally "
+            f"(manticore={MANTICORE_AUTO_MODEL}, typesense={TYPESENSE_AUTO_MODEL})"
+        )
 
     with StageTimer("dataset load"):
         rows = load_fiqa(args.dataset, args.limit)
