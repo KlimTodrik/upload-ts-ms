@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -30,6 +31,28 @@ class EngineResult:
     docs_per_second: float
     rows: int
     batch_size: int
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+class StageTimer:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        log(f"[stage] {self.label} started")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        elapsed = time.perf_counter() - self.started
+        if exc_type is None:
+            log(f"[stage] {self.label} finished in {elapsed:.4f}s")
+        else:
+            log(f"[stage] {self.label} failed after {elapsed:.4f}s")
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +112,7 @@ def chunked(items: list[dict[str, Any]], batch_size: int) -> Iterable[list[dict[
 
 
 def load_fiqa(dataset_name: str, limit: int) -> list[dict[str, Any]]:
+    log(f"[dataset] loading dataset={dataset_name} limit={limit}")
     load_dataset = require_datasets()
     try:
         ds = load_dataset(dataset_name, "corpus", split="corpus")
@@ -96,6 +120,7 @@ def load_fiqa(dataset_name: str, limit: int) -> list[dict[str, Any]]:
         if dataset_name != DATASET_NAME or "Dataset scripts are no longer supported" not in str(exc):
             raise
         parquet_path = ensure_fiqa_parquet()
+        log(f"[dataset] using parquet fallback {parquet_path}")
         ds = load_dataset("parquet", data_files={"corpus": str(parquet_path)}, split="corpus")
 
     rows: list[dict[str, Any]] = []
@@ -113,10 +138,14 @@ def load_fiqa(dataset_name: str, limit: int) -> list[dict[str, Any]]:
                 "embedding_input": " ".join(part for part in (title, text) if part).strip(),
             }
         )
+    log(f"[dataset] loaded rows={len(rows)}")
     return rows
 
 
 def add_precomputed_embeddings(rows: list[dict[str, Any]], model_name: str, batch_size: int) -> float:
+    log(
+        f"[embeddings] generating local embeddings model={model_name} rows={len(rows)} batch_size={batch_size}"
+    )
     SentenceTransformer = require_sentence_transformer()
     model = SentenceTransformer(model_name)
     texts = [row["embedding_input"] for row in rows]
@@ -132,6 +161,7 @@ def add_precomputed_embeddings(rows: list[dict[str, Any]], model_name: str, batc
 
     for row, vector in zip(rows, vectors):
         row["embedding"] = [float(x) for x in vector.tolist()]
+    log(f"[embeddings] generated {len(rows)} embeddings")
     return elapsed
 
 
@@ -159,6 +189,7 @@ class ManticoreClient:
         return self.conn
 
     def wait_ready(self) -> None:
+        log(f"[manticore] waiting for SQL on {self.host}:{self.port}")
         deadline = time.time() + self.timeout
         last_error = None
         while time.time() < deadline:
@@ -167,6 +198,7 @@ class ManticoreClient:
                 with conn.cursor() as cursor:
                     cursor.execute("SHOW TABLES")
                     cursor.fetchall()
+                log("[manticore] ready")
                 return
             except Exception as exc:  # pragma: no cover
                 last_error = str(exc)
@@ -181,6 +213,7 @@ class ManticoreClient:
             return cursor.fetchall()
 
     def recreate_table(self, table_name: str, mode: str, num_dim: int | None) -> None:
+        log(f"[manticore] recreating table={table_name} mode={mode}")
         self.sql(f"DROP TABLE IF EXISTS {table_name}")
         if mode == "precomputed":
             if not num_dim:
@@ -209,11 +242,16 @@ class ManticoreClient:
             )
             """
         self.sql(" ".join(ddl.split()))
+        log(f"[manticore] table={table_name} ready")
 
     def import_rows(self, table_name: str, rows: list[dict[str, Any]], batch_size: int, mode: str) -> EngineResult:
         conn = self.connect()
         started = time.perf_counter()
-        for batch in chunked(rows, batch_size):
+        total_batches = max(1, math.ceil(len(rows) / batch_size))
+        log(
+            f"[manticore] import started table={table_name} rows={len(rows)} batch_size={batch_size} batches={total_batches}"
+        )
+        for batch_idx, batch in enumerate(chunked(rows, batch_size), start=1):
             values_sql = []
             for row in batch:
                 source_id = conn.escape(row["source_id"])
@@ -240,8 +278,15 @@ class ManticoreClient:
                     + ", ".join(values_sql)
                 )
             self.sql(sql)
+            inserted = min(batch_idx * batch_size, len(rows))
+            progress = inserted / len(rows) * 100 if rows else 100.0
+            log(
+                f"[manticore] imported {inserted}/{len(rows)} rows "
+                f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+            )
 
         elapsed = time.perf_counter() - started
+        log(f"[manticore] import finished in {elapsed:.4f}s")
         return EngineResult(
             seconds=elapsed,
             docs_per_second=(len(rows) / elapsed) if elapsed > 0 else 0.0,
@@ -258,6 +303,7 @@ class TypesenseClient:
         self.headers = {"X-TYPESENSE-API-KEY": api_key}
 
     def wait_ready(self) -> None:
+        log(f"[typesense] waiting for HTTP on {self.base_url}")
         deadline = time.time() + self.timeout
         last_error = None
         while time.time() < deadline:
@@ -268,6 +314,7 @@ class TypesenseClient:
                     timeout=2,
                 )
                 if response.ok:
+                    log("[typesense] ready")
                     return
                 last_error = response.text
             except Exception as exc:  # pragma: no cover
@@ -276,6 +323,7 @@ class TypesenseClient:
         raise RuntimeError(f"Typesense is not ready: {last_error}")
 
     def recreate_collection(self, collection_name: str, mode: str, num_dim: int | None) -> None:
+        log(f"[typesense] recreating collection={collection_name} mode={mode}")
         self.requests.delete(
             f"{self.base_url}/collections/{collection_name}",
             headers=self.headers,
@@ -313,10 +361,15 @@ class TypesenseClient:
             timeout=max(self.timeout, 120),
         )
         response.raise_for_status()
+        log(f"[typesense] collection={collection_name} ready")
 
     def import_rows(self, collection_name: str, rows: list[dict[str, Any]], batch_size: int, mode: str) -> EngineResult:
         started = time.perf_counter()
-        for batch in chunked(rows, batch_size):
+        total_batches = max(1, math.ceil(len(rows) / batch_size))
+        log(
+            f"[typesense] import started collection={collection_name} rows={len(rows)} batch_size={batch_size} batches={total_batches}"
+        )
+        for batch_idx, batch in enumerate(chunked(rows, batch_size), start=1):
             lines = []
             for row in batch:
                 doc = {
@@ -339,8 +392,15 @@ class TypesenseClient:
             response.raise_for_status()
             if '"success": false' in response.text:
                 raise RuntimeError(f"Typesense import error: {response.text}")
+            inserted = min(batch_idx * batch_size, len(rows))
+            progress = inserted / len(rows) * 100 if rows else 100.0
+            log(
+                f"[typesense] imported {inserted}/{len(rows)} rows "
+                f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+            )
 
         elapsed = time.perf_counter() - started
+        log(f"[typesense] import finished in {elapsed:.4f}s")
         return EngineResult(
             seconds=elapsed,
             docs_per_second=(len(rows) / elapsed) if elapsed > 0 else 0.0,
@@ -359,8 +419,10 @@ def ensure_fiqa_parquet() -> Path:
     dataset_cache_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = dataset_cache_dir / "fiqa-corpus.parquet"
     if parquet_path.exists() and parquet_path.stat().st_size > 0:
+        log(f"[dataset] reusing cached parquet {parquet_path}")
         return parquet_path
 
+    log(f"[dataset] downloading parquet fallback to {parquet_path}")
     response = requests.get(BEIR_FIQA_PARQUET_URL, stream=True, timeout=120)
     response.raise_for_status()
     with parquet_path.open("wb") as handle:
@@ -380,18 +442,25 @@ def write_results(payload: dict[str, Any], mode: str, limit: int) -> Path:
 
 def main() -> int:
     args = parse_args()
+    log(
+        "[run] benchmark started "
+        f"mode={args.mode} engines={args.engines} limit={args.limit} "
+        f"batch_size={args.batch_size} embed_batch_size={args.embed_batch_size}"
+    )
 
-    rows = load_fiqa(args.dataset, args.limit)
+    with StageTimer("dataset load"):
+        rows = load_fiqa(args.dataset, args.limit)
     if not rows:
         raise RuntimeError("Dataset is empty")
 
     embedding_generation_seconds = 0.0
     if args.mode == "precomputed":
-        embedding_generation_seconds = add_precomputed_embeddings(
-            rows,
-            model_name=args.embed_model,
-            batch_size=args.embed_batch_size,
-        )
+        with StageTimer("embedding generation"):
+            embedding_generation_seconds = add_precomputed_embeddings(
+                rows,
+                model_name=args.embed_model,
+                batch_size=args.embed_batch_size,
+            )
         num_dim = len(rows[0]["embedding"])
     else:
         num_dim = None
@@ -413,19 +482,22 @@ def main() -> int:
 
     if args.engines in ("manticore", "both"):
         client = ManticoreClient(args.manticore_host, args.manticore_port, timeout=args.timeout)
-        client.wait_ready()
-        client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
-        result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+        with StageTimer("manticore import"):
+            client.wait_ready()
+            client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
+            result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
         output["manticore"] = asdict(result)
 
     if args.engines in ("typesense", "both"):
         client = TypesenseClient(args.typesense_url, args.typesense_api_key, timeout=args.timeout)
-        client.wait_ready()
-        client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
-        result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+        with StageTimer("typesense import"):
+            client.wait_ready()
+            client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
+            result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
         output["typesense"] = asdict(result)
 
     result_path = write_results(output, args.mode, len(rows))
+    log(f"[run] benchmark finished result={result_path}")
     print(json.dumps(output, indent=2, ensure_ascii=False))
     print(f"\nResults saved to {result_path}", file=sys.stderr)
     return 0

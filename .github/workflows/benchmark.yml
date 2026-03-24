@@ -66,6 +66,14 @@ jobs:
 
       - name: Run benchmark
         run: |
+          echo "::group::Benchmark parameters"
+          echo "MODE=$MODE"
+          echo "LIMIT=$LIMIT"
+          echo "BATCH_SIZE=$BATCH_SIZE"
+          echo "EMBED_BATCH_SIZE=$EMBED_BATCH_SIZE"
+          echo "::endgroup::"
+
+          echo "::group::Benchmark run"
           python scripts/benchmark.py \
             --mode "$MODE" \
             --engines both \
@@ -73,6 +81,7 @@ jobs:
             --batch-size "$BATCH_SIZE" \
             --embed-batch-size "$EMBED_BATCH_SIZE" \
             --embed-model sentence-transformers/all-MiniLM-L6-v2
+          echo "::endgroup::"
 
       - name: Build CI summary
         run: |
