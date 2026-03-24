@@ -51,7 +51,7 @@ Host ports by default:
 - пишет сводку прямо в `GitHub Actions Step Summary`
 - прикладывает сырой `results/*.json` как artifact
 
-По умолчанию CI гоняет `precomputed` режим с локальными эмбеддингами `sentence-transformers/all-MiniLM-L6-v2`.
+По умолчанию CI гоняет весь `FiQA` corpus (`57,638` документов) в `precomputed` режиме с локальными эмбеддингами `sentence-transformers/all-MiniLM-L6-v2`.
 
 Параметры для ручного запуска через `workflow_dispatch`:
 
