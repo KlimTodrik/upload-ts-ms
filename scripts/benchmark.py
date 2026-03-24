@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 
 RESULTS_DIR = Path("results")
-DATA_DIR = Path("data")
+CACHE_DIR = Path(".cache")
 DATASET_NAME = "BeIR/fiqa"
 PRECOMPUTED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MANTICORE_AUTO_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -355,8 +355,9 @@ def ensure_results_dir() -> None:
 
 def ensure_fiqa_parquet() -> Path:
     requests = require_requests()
-    DATA_DIR.mkdir(exist_ok=True)
-    parquet_path = DATA_DIR / "fiqa-corpus.parquet"
+    dataset_cache_dir = CACHE_DIR / "datasets"
+    dataset_cache_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = dataset_cache_dir / "fiqa-corpus.parquet"
     if parquet_path.exists() and parquet_path.stat().st_size > 0:
         return parquet_path
 
