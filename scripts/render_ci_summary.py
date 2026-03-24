@@ -21,8 +21,12 @@ def badge(label: str, value: str, color: str) -> str:
 
 def format_engine_row(name: str, payload: dict) -> str:
     seconds = float(payload["seconds"])
+    schema_setup_seconds = float(payload.get("schema_setup_seconds", 0.0))
     docs_per_second = float(payload["docs_per_second"])
-    return f"| {name} | {seconds:.4f} | {docs_per_second:.2f} | {int(payload['rows'])} | {int(payload['batch_size'])} |"
+    return (
+        f"| {name} | {seconds:.4f} | {schema_setup_seconds:.4f} | "
+        f"{docs_per_second:.2f} | {int(payload['rows'])} | {int(payload['batch_size'])} |"
+    )
 
 
 def main() -> int:
@@ -45,6 +49,7 @@ def main() -> int:
         f"- Mode: `{result['mode']}`",
         f"- Embedding model: `{result.get('embedding_model') or 'engine-native auto mode'}`",
         f"- Embedding generation: `{float(result['embedding_generation_seconds']):.4f}s`",
+        "- `Seconds` below means import-only time. Schema setup is shown separately.",
         "",
         "## Badges",
         "",
@@ -60,8 +65,8 @@ def main() -> int:
         "",
         "## Table",
         "",
-        "| Engine | Seconds | Docs/sec | Rows | Batch size |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Engine | Import seconds | Schema setup seconds | Docs/sec | Rows | Batch size |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
         format_engine_row("Manticore", manticore),
         format_engine_row("Typesense", typesense),
         "",

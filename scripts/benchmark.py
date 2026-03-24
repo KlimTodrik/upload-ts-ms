@@ -28,6 +28,7 @@ BEIR_FIQA_PARQUET_URL = (
 @dataclass
 class EngineResult:
     seconds: float
+    schema_setup_seconds: float
     docs_per_second: float
     rows: int
     batch_size: int
@@ -35,6 +36,10 @@ class EngineResult:
 
 def log(message: str) -> None:
     print(message, flush=True)
+
+
+def schema_timeout_for_mode(mode: str, base_timeout: float) -> float:
+    return max(base_timeout, 600.0) if mode == "auto" else base_timeout
 
 
 class StageTimer:
@@ -174,6 +179,9 @@ class ManticoreClient:
         self.conn = None
 
     def connect(self):
+        return self._connect_with_timeout(self.timeout)
+
+    def _connect_with_timeout(self, timeout: float):
         if self.conn is None or not self.conn.open:
             self.conn = self.pymysql.connect(
                 host=self.host,
@@ -182,9 +190,9 @@ class ManticoreClient:
                 password="",
                 autocommit=True,
                 charset="utf8mb4",
-                connect_timeout=int(self.timeout),
-                read_timeout=int(self.timeout),
-                write_timeout=int(self.timeout),
+                connect_timeout=int(timeout),
+                read_timeout=int(timeout),
+                write_timeout=int(timeout),
             )
         return self.conn
 
@@ -206,15 +214,21 @@ class ManticoreClient:
             time.sleep(1)
         raise RuntimeError(f"Manticore SQL is not ready: {last_error}")
 
-    def sql(self, statement: str) -> Any:
+    def sql(self, statement: str, timeout_override: float | None = None) -> Any:
+        if timeout_override is not None:
+            if self.conn is not None and self.conn.open:
+                self.conn.close()
+            self.conn = self._connect_with_timeout(timeout_override)
         conn = self.connect()
         with conn.cursor() as cursor:
             cursor.execute(statement)
             return cursor.fetchall()
 
-    def recreate_table(self, table_name: str, mode: str, num_dim: int | None) -> None:
+    def recreate_table(self, table_name: str, mode: str, num_dim: int | None) -> float:
         log(f"[manticore] recreating table={table_name} mode={mode}")
-        self.sql(f"DROP TABLE IF EXISTS {table_name}")
+        started = time.perf_counter()
+        ddl_timeout = schema_timeout_for_mode(mode, self.timeout)
+        self.sql(f"DROP TABLE IF EXISTS {table_name}", timeout_override=ddl_timeout)
         if mode == "precomputed":
             if not num_dim:
                 raise ValueError("num_dim is required for manual Manticore vectors")
@@ -241,8 +255,10 @@ class ManticoreClient:
                     FROM='title,description'
             )
             """
-        self.sql(" ".join(ddl.split()))
+        self.sql(" ".join(ddl.split()), timeout_override=ddl_timeout)
+        elapsed = time.perf_counter() - started
         log(f"[manticore] table={table_name} ready")
+        return elapsed
 
     def import_rows(self, table_name: str, rows: list[dict[str, Any]], batch_size: int, mode: str) -> EngineResult:
         conn = self.connect()
@@ -289,6 +305,7 @@ class ManticoreClient:
         log(f"[manticore] import finished in {elapsed:.4f}s")
         return EngineResult(
             seconds=elapsed,
+            schema_setup_seconds=0.0,
             docs_per_second=(len(rows) / elapsed) if elapsed > 0 else 0.0,
             rows=len(rows),
             batch_size=batch_size,
@@ -322,12 +339,14 @@ class TypesenseClient:
             time.sleep(1)
         raise RuntimeError(f"Typesense is not ready: {last_error}")
 
-    def recreate_collection(self, collection_name: str, mode: str, num_dim: int | None) -> None:
+    def recreate_collection(self, collection_name: str, mode: str, num_dim: int | None) -> float:
         log(f"[typesense] recreating collection={collection_name} mode={mode}")
+        started = time.perf_counter()
+        ddl_timeout = schema_timeout_for_mode(mode, self.timeout)
         self.requests.delete(
             f"{self.base_url}/collections/{collection_name}",
             headers=self.headers,
-            timeout=self.timeout,
+            timeout=ddl_timeout,
         )
 
         fields: list[dict[str, Any]] = [
@@ -358,10 +377,12 @@ class TypesenseClient:
             f"{self.base_url}/collections",
             headers={**self.headers, "Content-Type": "application/json"},
             json=schema,
-            timeout=max(self.timeout, 120),
+            timeout=max(ddl_timeout, 120),
         )
         response.raise_for_status()
+        elapsed = time.perf_counter() - started
         log(f"[typesense] collection={collection_name} ready")
+        return elapsed
 
     def import_rows(self, collection_name: str, rows: list[dict[str, Any]], batch_size: int, mode: str) -> EngineResult:
         started = time.perf_counter()
@@ -403,6 +424,7 @@ class TypesenseClient:
         log(f"[typesense] import finished in {elapsed:.4f}s")
         return EngineResult(
             seconds=elapsed,
+            schema_setup_seconds=0.0,
             docs_per_second=(len(rows) / elapsed) if elapsed > 0 else 0.0,
             rows=len(rows),
             batch_size=batch_size,
@@ -489,16 +511,18 @@ def main() -> int:
         client = ManticoreClient(args.manticore_host, args.manticore_port, timeout=args.timeout)
         with StageTimer("manticore import"):
             client.wait_ready()
-            client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
+            schema_setup_seconds = client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
             result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            result.schema_setup_seconds = schema_setup_seconds
         output["manticore"] = asdict(result)
 
     if args.engines in ("typesense", "both"):
         client = TypesenseClient(args.typesense_url, args.typesense_api_key, timeout=args.timeout)
         with StageTimer("typesense import"):
             client.wait_ready()
-            client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
+            schema_setup_seconds = client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
             result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            result.schema_setup_seconds = schema_setup_seconds
         output["typesense"] = asdict(result)
 
     result_path = write_results(output, args.mode, len(rows))
