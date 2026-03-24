@@ -42,6 +42,10 @@ def schema_timeout_for_mode(mode: str, base_timeout: float) -> float:
     return max(base_timeout, 600.0) if mode == "auto" else base_timeout
 
 
+def should_log_batch_progress(batch_idx: int, total_batches: int) -> bool:
+    return batch_idx == 1 or batch_idx == total_batches or batch_idx % 10 == 0
+
+
 class StageTimer:
     def __init__(self, label: str) -> None:
         self.label = label
@@ -296,10 +300,11 @@ class ManticoreClient:
             self.sql(sql)
             inserted = min(batch_idx * batch_size, len(rows))
             progress = inserted / len(rows) * 100 if rows else 100.0
-            log(
-                f"[manticore] imported {inserted}/{len(rows)} rows "
-                f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
-            )
+            if should_log_batch_progress(batch_idx, total_batches):
+                log(
+                    f"[manticore] imported {inserted}/{len(rows)} rows "
+                    f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+                )
 
         elapsed = time.perf_counter() - started
         log(f"[manticore] import finished in {elapsed:.4f}s")
@@ -415,10 +420,11 @@ class TypesenseClient:
                 raise RuntimeError(f"Typesense import error: {response.text}")
             inserted = min(batch_idx * batch_size, len(rows))
             progress = inserted / len(rows) * 100 if rows else 100.0
-            log(
-                f"[typesense] imported {inserted}/{len(rows)} rows "
-                f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
-            )
+            if should_log_batch_progress(batch_idx, total_batches):
+                log(
+                    f"[typesense] imported {inserted}/{len(rows)} rows "
+                    f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+                )
 
         elapsed = time.perf_counter() - started
         log(f"[typesense] import finished in {elapsed:.4f}s")
