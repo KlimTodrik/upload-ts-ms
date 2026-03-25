@@ -19,13 +19,32 @@ def badge(label: str, value: str, color: str) -> str:
     return f"![{label}](https://img.shields.io/badge/{quote(label)}-{quote(value)}-{color})"
 
 
+def format_bytes(value: float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    size = float(value)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit_idx = 0
+    while size >= 1024 and unit_idx < len(units) - 1:
+        size /= 1024
+        unit_idx += 1
+    return f"{size:.2f} {units[unit_idx]}"
+
+
 def format_engine_row(name: str, payload: dict) -> str:
     seconds = float(payload["seconds"])
     schema_setup_seconds = float(payload.get("schema_setup_seconds", 0.0))
     docs_per_second = float(payload["docs_per_second"])
+    resource_usage = payload.get("resource_usage") or {}
+    cpu_avg = resource_usage.get("cpu_percent_avg")
+    cpu_peak = resource_usage.get("cpu_percent_peak")
+    memory_avg = resource_usage.get("memory_used_bytes_avg")
+    memory_peak = resource_usage.get("memory_used_bytes_peak")
     return (
         f"| {name} | {seconds:.4f} | {schema_setup_seconds:.4f} | "
-        f"{docs_per_second:.2f} | {int(payload['rows'])} | {int(payload['batch_size'])} |"
+        f"{docs_per_second:.2f} | {cpu_avg if cpu_avg is not None else 'n/a'} | "
+        f"{cpu_peak if cpu_peak is not None else 'n/a'} | {format_bytes(memory_avg)} | "
+        f"{format_bytes(memory_peak)} | {int(payload['rows'])} | {int(payload['batch_size'])} |"
     )
 
 
@@ -63,10 +82,46 @@ def main() -> int:
         " ",
         badge("Typesense docs/sec", f"{float(typesense['docs_per_second']):.2f}", "0a7f5a"),
         "",
+        badge(
+            "Manticore CPU avg",
+            f"{float((manticore.get('resource_usage') or {}).get('cpu_percent_avg', 0.0)):.2f}%",
+            "1f6feb",
+        ),
+        " ",
+        badge(
+            "Typesense CPU avg",
+            f"{float((typesense.get('resource_usage') or {}).get('cpu_percent_avg', 0.0)):.2f}%",
+            "0a7f5a",
+        ),
+        "",
+        badge(
+            "Manticore CPU peak",
+            f"{float((manticore.get('resource_usage') or {}).get('cpu_percent_peak', 0.0)):.2f}%",
+            "1f6feb",
+        ),
+        " ",
+        badge(
+            "Typesense CPU peak",
+            f"{float((typesense.get('resource_usage') or {}).get('cpu_percent_peak', 0.0)):.2f}%",
+            "0a7f5a",
+        ),
+        "",
+        badge(
+            "Manticore memory peak",
+            format_bytes((manticore.get("resource_usage") or {}).get("memory_used_bytes_peak")),
+            "1f6feb",
+        ),
+        " ",
+        badge(
+            "Typesense memory peak",
+            format_bytes((typesense.get("resource_usage") or {}).get("memory_used_bytes_peak")),
+            "0a7f5a",
+        ),
+        "",
         "## Table",
         "",
-        "| Engine | Import seconds | Schema setup seconds | Docs/sec | Rows | Batch size |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Engine | Import seconds | Schema setup seconds | Docs/sec | CPU avg % | CPU peak % | Memory avg | Memory peak | Rows | Batch size |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         format_engine_row("Manticore", manticore),
         format_engine_row("Typesense", typesense),
         "",

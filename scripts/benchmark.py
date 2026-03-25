@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
+import shutil
+import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -19,6 +23,8 @@ PRECOMPUTED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MANTICORE_AUTO_MODEL = "sentence-transformers/all-MiniLM-L12-v2"
 TYPESENSE_AUTO_MODEL = "ts/all-MiniLM-L12-v2"
 DEFAULT_COLLECTION = "fiqa_bench"
+DEFAULT_MANTICORE_CONTAINER = "upload-compare-manticore"
+DEFAULT_TYPESENSE_CONTAINER = "upload-compare-typesense"
 BEIR_FIQA_PARQUET_URL = (
     "https://huggingface.co/datasets/BeIR/fiqa/resolve/"
     "ecb5eb6dcbf64d9eb5b9b48ef4fcd925af0ea056/corpus/fiqa-corpus.parquet"
@@ -32,6 +38,7 @@ class EngineResult:
     docs_per_second: float
     rows: int
     batch_size: int
+    resource_usage: dict[str, Any] | None = None
 
 
 def log(message: str) -> None:
@@ -85,6 +92,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manticore-port", type=int, default=19306)
     parser.add_argument("--typesense-url", default="http://127.0.0.1:18108")
     parser.add_argument("--typesense-api-key", default="xyz")
+    parser.add_argument("--manticore-container", default=DEFAULT_MANTICORE_CONTAINER)
+    parser.add_argument("--typesense-container", default=DEFAULT_TYPESENSE_CONTAINER)
+    parser.add_argument(
+        "--stats-interval",
+        type=float,
+        default=0.5,
+        help="docker stats polling interval in seconds for CPU/memory sampling",
+    )
     parser.add_argument("--embed-model", default=PRECOMPUTED_MODEL)
     parser.add_argument("--embed-batch-size", type=int, default=128)
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -118,6 +133,170 @@ def require_pymysql():
 def chunked(items: list[dict[str, Any]], batch_size: int) -> Iterable[list[dict[str, Any]]]:
     for idx in range(0, len(items), batch_size):
         yield items[idx : idx + batch_size]
+
+
+BYTE_UNITS = {
+    "b": 1,
+    "kb": 1000,
+    "kib": 1024,
+    "mb": 1000**2,
+    "mib": 1024**2,
+    "gb": 1000**3,
+    "gib": 1024**3,
+    "tb": 1000**4,
+    "tib": 1024**4,
+}
+
+
+def parse_size_bytes(raw: str) -> int:
+    value = raw.strip()
+    if not value:
+        raise ValueError("size value is empty")
+
+    match = re.match(r"^\s*([0-9]*\.?[0-9]+)\s*([A-Za-z]+)?\s*$", value)
+    if not match:
+        raise ValueError(f"unsupported size format: {raw}")
+    number = float(match.group(1))
+    unit = (match.group(2) or "B").lower()
+    multiplier = BYTE_UNITS.get(unit)
+    if multiplier is None:
+        raise ValueError(f"unsupported size unit: {unit}")
+    return int(number * multiplier)
+
+
+def parse_percent(raw: str) -> float:
+    return float(raw.strip().rstrip("%"))
+
+
+def format_bytes(value: float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    size = float(value)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit_idx = 0
+    while size >= 1024 and unit_idx < len(units) - 1:
+        size /= 1024
+        unit_idx += 1
+    return f"{size:.2f} {units[unit_idx]}"
+
+
+def build_resource_usage_summary(samples: list[dict[str, float | int]]) -> dict[str, Any]:
+    memory_limit_values = [int(sample["memory_limit_bytes"]) for sample in samples if int(sample["memory_limit_bytes"]) > 0]
+    memory_limit_bytes = max(memory_limit_values) if memory_limit_values else 0
+    cpu_values = [float(sample["cpu_percent"]) for sample in samples]
+    memory_values = [int(sample["memory_used_bytes"]) for sample in samples]
+    interval_values = [
+        max(float(samples[i]["elapsed_seconds"]) - float(samples[i - 1]["elapsed_seconds"]), 0.0)
+        for i in range(1, len(samples))
+    ]
+    summary: dict[str, Any] = {
+        "sample_count": len(samples),
+        "sampling_interval_seconds": round(sum(interval_values) / len(interval_values), 4) if interval_values else 0.0,
+        "cpu_percent_avg": round(sum(cpu_values) / len(cpu_values), 2),
+        "cpu_percent_peak": round(max(cpu_values), 2),
+        "memory_used_bytes_avg": int(sum(memory_values) / len(memory_values)),
+        "memory_used_bytes_peak": max(memory_values),
+    }
+    if memory_limit_bytes > 0:
+        summary["memory_limit_bytes"] = memory_limit_bytes
+        summary["memory_percent_peak"] = round(max(memory_values) / memory_limit_bytes * 100, 2)
+    return summary
+
+
+def format_resource_usage(resource_usage: dict[str, Any] | None) -> str:
+    if not resource_usage:
+        return "resource usage unavailable"
+    if resource_usage.get("error"):
+        return (
+            "resource usage unavailable: "
+            f"{resource_usage['error']}"
+        )
+
+    cpu_avg = resource_usage.get("cpu_percent_avg")
+    cpu_peak = resource_usage.get("cpu_percent_peak")
+    mem_avg = resource_usage.get("memory_used_bytes_avg")
+    mem_peak = resource_usage.get("memory_used_bytes_peak")
+    memory_peak_percent = resource_usage.get("memory_percent_peak")
+
+    memory_peak_suffix = ""
+    if memory_peak_percent is not None:
+        memory_peak_suffix = f" ({float(memory_peak_percent):.2f}% limit)"
+
+    return (
+        f"cpu avg={float(cpu_avg):.2f}% peak={float(cpu_peak):.2f}% | "
+        f"mem avg={format_bytes(mem_avg)} peak={format_bytes(mem_peak)}{memory_peak_suffix}"
+    )
+
+
+class DockerStatsMonitor:
+    def __init__(self, container_name: str, interval_seconds: float) -> None:
+        self.container_name = container_name
+        self.interval_seconds = interval_seconds
+        self.samples: list[dict[str, float | int]] = []
+        self.error: str | None = None
+        self._running = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+
+    def start(self) -> None:
+        if shutil.which("docker") is None:
+            self.error = "docker CLI is not available"
+            return
+        self._started_at = time.perf_counter()
+        self._running.set()
+        self._thread = threading.Thread(target=self._run, name=f"docker-stats-{self.container_name}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> dict[str, Any] | None:
+        if self._thread is None:
+            return None
+        self._running.clear()
+        self._thread.join(timeout=max(self.interval_seconds * 4, 2.0))
+        if self.error:
+            return {"container": self.container_name, "error": self.error}
+        if not self.samples:
+            return {"container": self.container_name, "error": "no docker stats samples collected"}
+        summary = build_resource_usage_summary(self.samples)
+        summary["container"] = self.container_name
+        return summary
+
+    def _run(self) -> None:
+        while self._running.is_set():
+            try:
+                sample = self._collect_sample()
+                if sample is not None:
+                    self.samples.append(sample)
+            except Exception as exc:
+                self.error = str(exc)
+                self._running.clear()
+                return
+            time.sleep(self.interval_seconds)
+
+    def _collect_sample(self) -> dict[str, float | int] | None:
+        command = [
+            "docker",
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.CPUPerc}}\t{{.MemUsage}}",
+            self.container_name,
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(stderr or f"docker stats failed for {self.container_name}")
+
+        line = completed.stdout.strip()
+        if not line:
+            return None
+        cpu_raw, mem_raw = line.split("\t", 1)
+        memory_used_raw, _, memory_limit_raw = mem_raw.partition("/")
+        return {
+            "elapsed_seconds": round(time.perf_counter() - self._started_at, 4),
+            "cpu_percent": parse_percent(cpu_raw),
+            "memory_used_bytes": parse_size_bytes(memory_used_raw),
+            "memory_limit_bytes": parse_size_bytes(memory_limit_raw) if memory_limit_raw.strip() else 0,
+        }
 
 
 def load_fiqa(dataset_name: str, limit: int) -> list[dict[str, Any]]:
@@ -517,18 +696,32 @@ def main() -> int:
         client = ManticoreClient(args.manticore_host, args.manticore_port, timeout=args.timeout)
         with StageTimer("manticore import"):
             client.wait_ready()
-            schema_setup_seconds = client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
-            result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            resource_monitor = DockerStatsMonitor(args.manticore_container, args.stats_interval)
+            resource_monitor.start()
+            try:
+                schema_setup_seconds = client.recreate_table(args.collection, mode=args.mode, num_dim=num_dim)
+                result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            finally:
+                resource_usage = resource_monitor.stop()
             result.schema_setup_seconds = schema_setup_seconds
+            result.resource_usage = resource_usage
+            log(f"[manticore] {format_resource_usage(resource_usage)}")
         output["manticore"] = asdict(result)
 
     if args.engines in ("typesense", "both"):
         client = TypesenseClient(args.typesense_url, args.typesense_api_key, timeout=args.timeout)
         with StageTimer("typesense import"):
             client.wait_ready()
-            schema_setup_seconds = client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
-            result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            resource_monitor = DockerStatsMonitor(args.typesense_container, args.stats_interval)
+            resource_monitor.start()
+            try:
+                schema_setup_seconds = client.recreate_collection(args.collection, mode=args.mode, num_dim=num_dim)
+                result = client.import_rows(args.collection, rows, args.batch_size, mode=args.mode)
+            finally:
+                resource_usage = resource_monitor.stop()
             result.schema_setup_seconds = schema_setup_seconds
+            result.resource_usage = resource_usage
+            log(f"[typesense] {format_resource_usage(resource_usage)}")
         output["typesense"] = asdict(result)
 
     result_path = write_results(output, args.mode, len(rows))

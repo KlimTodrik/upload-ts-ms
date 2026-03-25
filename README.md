@@ -21,6 +21,7 @@
   - при необходимости считает эмбеддинги
   - создает таблицу/коллекцию
   - загружает документы батчами
+  - параллельно сэмплирует `docker stats` для CPU/RAM контейнера движка
   - пишет итог в `results/*.json`
 
 ## Быстрый старт
@@ -37,6 +38,11 @@ Host ports by default:
 
 - Manticore SQL/HTTP: `19306` / `19308`
 - Typesense HTTP: `18108`
+
+Container names by default:
+
+- Manticore: `upload-compare-manticore`
+- Typesense: `upload-compare-typesense`
 
 ## GitHub Actions
 
@@ -98,14 +104,24 @@ python scripts/benchmark.py --mode precomputed --engines manticore --limit 10000
   "embedding_generation_seconds": 2.84,
   "manticore": {
     "seconds": 1.73,
-    "docs_per_second": 578.03
+    "docs_per_second": 578.03,
+    "resource_usage": {
+      "cpu_percent_peak": 87.4,
+      "memory_used_bytes_peak": 16252928
+    }
   },
   "typesense": {
     "seconds": 2.11,
-    "docs_per_second": 473.93
+    "docs_per_second": 473.93,
+    "resource_usage": {
+      "cpu_percent_peak": 94.2,
+      "memory_used_bytes_peak": 22478848
+    }
   }
 }
 ```
+
+`resource_usage` содержит усредненные и пиковые значения по CPU и памяти, собранные через `docker stats` во время стадии schema setup + import. Если `docker` недоступен или контейнер назван иначе, benchmark не падает, а пишет `resource_usage.error`.
 
 ## Замечания по корректности
 
