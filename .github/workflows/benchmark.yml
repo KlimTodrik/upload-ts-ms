@@ -6,7 +6,7 @@ on:
       limit:
         description: Number of FiQA documents to index
         required: false
-        default: "5000"
+        default: "500"
       batch_size:
         description: Insert batch size
         required: false
@@ -40,7 +40,7 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
-      LIMIT: ${{ inputs.limit || '5000' }}
+      LIMIT: ${{ inputs.limit || '500' }}
       BATCH_SIZE: ${{ inputs.batch_size || '100' }}
       EMBED_BATCH_SIZE: ${{ inputs.embed_batch_size || '64' }}
       MODE: ${{ inputs.mode || 'auto' }}
