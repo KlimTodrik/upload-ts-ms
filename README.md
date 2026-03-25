@@ -7,7 +7,7 @@
 ## Что именно сравнивается
 
 - `auto`: каждая система сама генерирует эмбеддинги при индексации. Это теперь дефолтный сценарий для CI:
-  Manticore использует `sentence-transformers/all-MiniLM-L6-v2`, а Typesense использует встроенную модель `ts/all-MiniLM-L12-v2`.
+  Manticore использует `sentence-transformers/all-MiniLM-L12-v2`, а Typesense использует встроенную модель `ts/all-MiniLM-L12-v2`.
 
 - `precomputed`: эмбеддинги строятся локально в Python одной и той же моделью `sentence-transformers/all-MiniLM-L6-v2`, после чего одинаковые векторы загружаются и в Manticore, и в Typesense. Этот режим оставлен как отдельный сценарий, если нужно сравнить именно ingestion без стоимости встроенного embedding pipeline.
 
