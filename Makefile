@@ -2,7 +2,7 @@ PYTHON ?= python3
 VENV ?= .venv
 ACTIVATE = source $(VENV)/bin/activate
 
-.PHONY: venv install up down benchmark-precomputed benchmark-auto
+.PHONY: venv install up down benchmark
 
 venv:
 	$(PYTHON) -m venv $(VENV)
@@ -16,8 +16,5 @@ up:
 down:
 	docker compose down
 
-benchmark-precomputed:
-	$(ACTIVATE) && python scripts/benchmark.py --mode precomputed --engines both --limit 1000
-
-benchmark-auto:
+benchmark:
 	$(ACTIVATE) && python scripts/benchmark.py --mode auto --engines both --limit 1000

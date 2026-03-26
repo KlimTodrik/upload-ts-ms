@@ -1,15 +1,13 @@
 # Upload Compare: Manticore vs Typesense
 
-Мини-стенд для сравнения скорости загрузки одного и того же датасета в `Manticore Search` и `Typesense` с векторным полем.
+Мини-стенд для сравнения скорости загрузки одного и того же датасета в `Manticore Search` и `Typesense`, где эмбеддинги строятся самими движками при записи.
 
 По умолчанию используется корпус `BeIR/fiqa` с Hugging Face (`57,638` документов). Для коротких прогонов можно ограничить размер через `--limit`.
 
 ## Что именно сравнивается
 
-- `auto`: каждая система сама генерирует эмбеддинги при индексации. Это теперь дефолтный сценарий для CI:
+- `auto`: каждая система сама генерирует эмбеддинги при индексации.
   Manticore использует `sentence-transformers/all-MiniLM-L12-v2`, а Typesense использует встроенную модель `ts/all-MiniLM-L12-v2`.
-
-- `precomputed`: эмбеддинги строятся локально в Python одной и той же моделью `sentence-transformers/all-MiniLM-L6-v2`, после чего одинаковые векторы загружаются и в Manticore, и в Typesense. Этот режим оставлен как отдельный сценарий, если нужно сравнить именно ingestion без стоимости встроенного embedding pipeline.
 
 На первом запуске в `auto` режиме обе системы будут скачивать модели. Такой прогон не стоит сравнивать с "прогретым" состоянием.
 
@@ -31,7 +29,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 docker compose up -d
-python scripts/benchmark.py --mode precomputed --engines both --limit 1000
+python scripts/benchmark.py --mode auto --engines both --limit 1000
 ```
 
 Host ports by default:
@@ -61,21 +59,9 @@ Container names by default:
 
 - `limit`
 - `batch_size`
-- `embed_batch_size`
 - `mode`
 
 ## Примеры
-
-Честное сравнение ingestion:
-
-```bash
-python scripts/benchmark.py \
-  --mode precomputed \
-  --engines both \
-  --limit 10000 \
-  --embed-model sentence-transformers/all-MiniLM-L6-v2 \
-  --batch-size 250
-```
 
 Сравнение нативной авто-генерации эмбеддингов:
 
@@ -90,7 +76,7 @@ python scripts/benchmark.py \
 Только Manticore:
 
 ```bash
-python scripts/benchmark.py --mode precomputed --engines manticore --limit 10000
+python scripts/benchmark.py --mode auto --engines manticore --limit 10000
 ```
 
 ## Что выводит benchmark
@@ -101,9 +87,9 @@ python scripts/benchmark.py --mode precomputed --engines manticore --limit 10000
 {
   "dataset": "BeIR/fiqa",
   "rows": 1000,
-  "mode": "precomputed",
-  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-  "embedding_generation_seconds": 2.84,
+  "mode": "auto",
+  "embedding_model": null,
+  "embedding_generation_seconds": 0.0,
   "manticore": {
     "seconds": 1.73,
     "docs_per_second": 578.03,
@@ -127,8 +113,6 @@ python scripts/benchmark.py --mode precomputed --engines manticore --limit 10000
 
 ## Замечания по корректности
 
-- Если цель именно сравнить скорость загрузки, используй `precomputed`.
-- Если цель сравнить "как быстро система поднимает semantic-ready индекс", используй `auto`.
 - Для Manticore в этом стенде загрузка идет через HTTP `/bulk`, а не через MySQL-протокол.
 - Для честного сравнения прогоняй оба движка:
   - на одном и том же `--limit`

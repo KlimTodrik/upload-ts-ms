@@ -11,17 +11,12 @@ on:
         description: Insert batch size
         required: false
         default: "100"
-      embed_batch_size:
-        description: Embedding batch size
-        required: false
-        default: "64"
       mode:
         description: Benchmark mode
         required: false
         default: auto
         type: choice
         options:
-          - precomputed
           - auto
   push:
     branches:
@@ -42,7 +37,6 @@ jobs:
       PYTHONUNBUFFERED: "1"
       LIMIT: ${{ inputs.limit || '500' }}
       BATCH_SIZE: ${{ inputs.batch_size || '100' }}
-      EMBED_BATCH_SIZE: ${{ inputs.embed_batch_size || '64' }}
       MODE: ${{ inputs.mode || 'auto' }}
 
     steps:
@@ -70,7 +64,6 @@ jobs:
           echo "MODE=$MODE"
           echo "LIMIT=$LIMIT"
           echo "BATCH_SIZE=$BATCH_SIZE"
-          echo "EMBED_BATCH_SIZE=$EMBED_BATCH_SIZE"
           echo "::endgroup::"
 
           echo "::group::Benchmark run"
@@ -78,9 +71,7 @@ jobs:
             --mode "$MODE" \
             --engines both \
             --limit "$LIMIT" \
-            --batch-size "$BATCH_SIZE" \
-            --embed-batch-size "$EMBED_BATCH_SIZE" \
-            --embed-model sentence-transformers/all-MiniLM-L6-v2
+            --batch-size "$BATCH_SIZE"
           echo "::endgroup::"
 
       - name: Build CI summary
