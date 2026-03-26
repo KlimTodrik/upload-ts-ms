@@ -374,6 +374,41 @@ class ManticoreClient:
         self._check_response(response, "SQL")
         return response.text
 
+    def _bulk_insert(self, table_name: str, batch: list[dict[str, Any]], mode: str) -> Any:
+        lines = []
+        for row in batch:
+            document = {
+                "source_id": row["source_id"],
+                "title": row["title"],
+                "description": row["description"],
+            }
+            if mode == "precomputed":
+                document["embedding"] = row["embedding"]
+            lines.append(
+                json.dumps(
+                    {
+                        "insert": {
+                            "table": table_name,
+                            "id": int(row["id"]),
+                            "doc": document,
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        response = self.session.post(
+            f"{self.base_url}/bulk",
+            headers={"Content-Type": "application/x-ndjson"},
+            data="\n".join(lines) + "\n",
+            timeout=max(self.timeout, 120),
+        )
+        self._check_response(response, "bulk insert")
+        payload = response.json()
+        if payload.get("errors"):
+            raise RuntimeError(f"Manticore HTTP bulk insert failed: {payload.get('error') or payload}")
+        return payload
+
     def wait_ready(self) -> None:
         log(f"[manticore] waiting for HTTP on {self.base_url}")
         deadline = time.time() + self.timeout
@@ -429,33 +464,16 @@ class ManticoreClient:
         total_batches = max(1, math.ceil(len(rows) / batch_size))
         log(
             f"[manticore] import started table={table_name} rows={len(rows)} "
-            f"insert_mode=http_insert batch_size={batch_size} progress_batches={total_batches}"
+            f"insert_mode=http_bulk batch_size={batch_size} batches={total_batches}"
         )
         for batch_idx, batch in enumerate(chunked(rows, batch_size), start=1):
-            for row in batch:
-                document = {
-                    "source_id": row["source_id"],
-                    "title": row["title"],
-                    "description": row["description"],
-                }
-                if mode == "precomputed":
-                    document["embedding"] = row["embedding"]
-                response = self.session.post(
-                    f"{self.base_url}/insert",
-                    json={
-                        "table": table_name,
-                        "id": int(row["id"]),
-                        "doc": document,
-                    },
-                    timeout=max(self.timeout, 120),
-                )
-                self._check_response(response, "insert")
+            self._bulk_insert(table_name, batch, mode)
             inserted = min(batch_idx * batch_size, len(rows))
             progress = inserted / len(rows) * 100 if rows else 100.0
             if should_log_batch_progress(batch_idx, total_batches):
                 log(
                     f"[manticore] imported {inserted}/{len(rows)} rows "
-                    f"(progress batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+                    f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
                 )
 
         elapsed = time.perf_counter() - started
