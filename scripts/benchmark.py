@@ -89,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--collection", default=DEFAULT_COLLECTION)
     parser.add_argument("--manticore-host", default="127.0.0.1")
-    parser.add_argument("--manticore-port", type=int, default=19306)
+    parser.add_argument("--manticore-port", type=int, default=19308, help="Manticore HTTP port")
     parser.add_argument("--typesense-url", default="http://127.0.0.1:18108")
     parser.add_argument("--typesense-api-key", default="xyz")
     parser.add_argument("--manticore-container", default=DEFAULT_MANTICORE_CONTAINER)
@@ -122,12 +122,6 @@ def require_sentence_transformer():
     from sentence_transformers import SentenceTransformer  # type: ignore
 
     return SentenceTransformer
-
-
-def require_pymysql():
-    import pymysql  # type: ignore
-
-    return pymysql
 
 
 def chunked(items: list[dict[str, Any]], batch_size: int) -> Iterable[list[dict[str, Any]]]:
@@ -355,63 +349,50 @@ def add_precomputed_embeddings(rows: list[dict[str, Any]], model_name: str, batc
 
 class ManticoreClient:
     def __init__(self, host: str, port: int, timeout: float) -> None:
-        self.pymysql = require_pymysql()
-        self.host = host
-        self.port = port
+        self.requests = require_requests()
+        self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
-        self.conn = None
+        self.session = self.requests.Session()
 
-    def connect(self):
-        return self._connect_with_timeout(self.timeout)
+    def _check_response(self, response: Any, action: str) -> None:
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            body = response.text.strip()
+            detail = f" status={response.status_code}"
+            if body:
+                detail += f" body={body}"
+            raise RuntimeError(f"Manticore HTTP {action} failed:{detail}") from exc
 
-    def _connect_with_timeout(self, timeout: float):
-        if self.conn is None or not self.conn.open:
-            self.conn = self.pymysql.connect(
-                host=self.host,
-                port=self.port,
-                user="",
-                password="",
-                autocommit=True,
-                charset="utf8mb4",
-                connect_timeout=int(timeout),
-                read_timeout=int(timeout),
-                write_timeout=int(timeout),
-            )
-        return self.conn
+    def _sql(self, statement: str, timeout_override: float | None = None) -> Any:
+        response = self.session.post(
+            f"{self.base_url}/sql",
+            params={"mode": "raw"},
+            data=statement,
+            timeout=timeout_override or self.timeout,
+        )
+        self._check_response(response, "SQL")
+        return response.text
 
     def wait_ready(self) -> None:
-        log(f"[manticore] waiting for SQL on {self.host}:{self.port}")
+        log(f"[manticore] waiting for HTTP on {self.base_url}")
         deadline = time.time() + self.timeout
         last_error = None
         while time.time() < deadline:
             try:
-                conn = self.connect()
-                with conn.cursor() as cursor:
-                    cursor.execute("SHOW TABLES")
-                    cursor.fetchall()
+                self._sql("SHOW TABLES", timeout_override=2)
                 log("[manticore] ready")
                 return
             except Exception as exc:  # pragma: no cover
                 last_error = str(exc)
-                self.conn = None
             time.sleep(1)
-        raise RuntimeError(f"Manticore SQL is not ready: {last_error}")
-
-    def sql(self, statement: str, timeout_override: float | None = None) -> Any:
-        if timeout_override is not None:
-            if self.conn is not None and self.conn.open:
-                self.conn.close()
-            self.conn = self._connect_with_timeout(timeout_override)
-        conn = self.connect()
-        with conn.cursor() as cursor:
-            cursor.execute(statement)
-            return cursor.fetchall()
+        raise RuntimeError(f"Manticore HTTP is not ready: {last_error}")
 
     def recreate_table(self, table_name: str, mode: str, num_dim: int | None) -> float:
         log(f"[manticore] recreating table={table_name} mode={mode}")
         started = time.perf_counter()
         ddl_timeout = schema_timeout_for_mode(mode, self.timeout)
-        self.sql(f"DROP TABLE IF EXISTS {table_name}", timeout_override=ddl_timeout)
+        self._sql(f"DROP TABLE IF EXISTS {table_name}", timeout_override=ddl_timeout)
         if mode == "precomputed":
             if not num_dim:
                 raise ValueError("num_dim is required for manual Manticore vectors")
@@ -438,51 +419,43 @@ class ManticoreClient:
                     FROM='title,description'
             )
             """
-        self.sql(" ".join(ddl.split()), timeout_override=ddl_timeout)
+        self._sql(" ".join(ddl.split()), timeout_override=ddl_timeout)
         elapsed = time.perf_counter() - started
         log(f"[manticore] table={table_name} ready")
         return elapsed
 
     def import_rows(self, table_name: str, rows: list[dict[str, Any]], batch_size: int, mode: str) -> EngineResult:
-        conn = self.connect()
         started = time.perf_counter()
         total_batches = max(1, math.ceil(len(rows) / batch_size))
         log(
-            f"[manticore] import started table={table_name} rows={len(rows)} batch_size={batch_size} batches={total_batches}"
+            f"[manticore] import started table={table_name} rows={len(rows)} "
+            f"insert_mode=http_insert batch_size={batch_size} progress_batches={total_batches}"
         )
         for batch_idx, batch in enumerate(chunked(rows, batch_size), start=1):
-            values_sql = []
             for row in batch:
-                source_id = conn.escape(row["source_id"])
-                title = conn.escape(row["title"])
-                description = conn.escape(row["description"])
+                document = {
+                    "source_id": row["source_id"],
+                    "title": row["title"],
+                    "description": row["description"],
+                }
                 if mode == "precomputed":
-                    vector_sql = "(" + ",".join(f"{float(x):.8f}" for x in row["embedding"]) + ")"
-                    values_sql.append(
-                        f"({row['id']}, {source_id}, {title}, {description}, {vector_sql})"
-                    )
-                else:
-                    values_sql.append(f"({row['id']}, {source_id}, {title}, {description})")
-
-            if mode == "precomputed":
-                sql = (
-                    f"INSERT INTO {table_name} "
-                    f"(id, source_id, title, description, embedding) VALUES "
-                    + ", ".join(values_sql)
+                    document["embedding"] = row["embedding"]
+                response = self.session.post(
+                    f"{self.base_url}/insert",
+                    json={
+                        "table": table_name,
+                        "id": int(row["id"]),
+                        "doc": document,
+                    },
+                    timeout=max(self.timeout, 120),
                 )
-            else:
-                sql = (
-                    f"INSERT INTO {table_name} "
-                    f"(id, source_id, title, description) VALUES "
-                    + ", ".join(values_sql)
-                )
-            self.sql(sql)
+                self._check_response(response, "insert")
             inserted = min(batch_idx * batch_size, len(rows))
             progress = inserted / len(rows) * 100 if rows else 100.0
             if should_log_batch_progress(batch_idx, total_batches):
                 log(
                     f"[manticore] imported {inserted}/{len(rows)} rows "
-                    f"(batch {batch_idx}/{total_batches}, {progress:.1f}%)"
+                    f"(progress batch {batch_idx}/{total_batches}, {progress:.1f}%)"
                 )
 
         elapsed = time.perf_counter() - started

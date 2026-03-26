@@ -39,6 +39,8 @@ Host ports by default:
 - Manticore SQL/HTTP: `19306` / `19308`
 - Typesense HTTP: `18108`
 
+Для benchmark Manticore теперь используется HTTP API на `19308`: схема создается через HTTP SQL endpoint, а документы загружаются через `/insert` по одному JSON-документу за запрос.
+
 Container names by default:
 
 - Manticore: `upload-compare-manticore`
@@ -127,6 +129,7 @@ python scripts/benchmark.py --mode precomputed --engines manticore --limit 10000
 
 - Если цель именно сравнить скорость загрузки, используй `precomputed`.
 - Если цель сравнить "как быстро система поднимает semantic-ready индекс", используй `auto`.
+- Для Manticore в этом стенде загрузка идет через HTTP `/insert`, а не через MySQL-протокол.
 - Для честного сравнения прогоняй оба движка:
   - на одном и том же `--limit`
   - с одинаковым `--batch-size`
