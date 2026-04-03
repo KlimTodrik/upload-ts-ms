@@ -47,8 +47,12 @@ Container names by default:
 
 Особенность текущего Manticore-образа: сервис держится на процессе
 `searchd --config /etc/manticoresearch/manticore.conf --nodetach`, который
-задан в `docker-compose.yml` через `entrypoint`/`command`. Если убрать этот
-явный запуск, контейнер стартует, но сам `searchd` не поднимется автоматически.
+задан в `docker-compose.yml` через `entrypoint`/`command`. Также штатный конфиг
+в образе слушает `127.0.0.1`, поэтому в стенде он переопределён локальным
+файлом [`manticore/manticore.conf`](/Users/djklim87/Projects/work/upload-ts-ms/manticore/manticore.conf)
+с bind на `0.0.0.0`. Если убрать этот явный запуск или override-конфиг,
+контейнер стартует, но `searchd` либо не поднимется автоматически, либо будет
+доступен только внутри контейнера.
 
 ## GitHub Actions
 

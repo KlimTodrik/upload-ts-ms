@@ -9,6 +9,7 @@ services:
       - "19308:9308"
     volumes:
       - ./data/manticore:/var/lib/manticore
+      - ./manticore/manticore.conf:/etc/manticoresearch/manticore.conf:ro
 
   typesense:
     image: typesense/typesense:30.1
