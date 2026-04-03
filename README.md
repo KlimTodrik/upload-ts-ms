@@ -14,6 +14,7 @@
 ## Структура
 
 - `docker-compose.yml` поднимает `Manticore` и `Typesense`
+  Для `Manticore` используется образ `ghcr.io/manticoresoftware/manticoresearch:test-kit-fix_performance-mcl`, в котором `searchd` запускается явно через `entrypoint`/`command`, а не автоматически как PID 1.
 - `scripts/benchmark.py`:
   - скачивает `FiQA`
   - при необходимости считает эмбеддинги
@@ -43,6 +44,11 @@ Container names by default:
 
 - Manticore: `upload-compare-manticore`
 - Typesense: `upload-compare-typesense`
+
+Особенность текущего Manticore-образа: сервис держится на процессе
+`searchd --config /etc/manticoresearch/manticore.conf --nodetach`, который
+задан в `docker-compose.yml` через `entrypoint`/`command`. Если убрать этот
+явный запуск, контейнер стартует, но сам `searchd` не поднимется автоматически.
 
 ## GitHub Actions
 

@@ -1,7 +1,9 @@
 services:
   manticore:
-    image: manticoresearch/manticore:latest
+    image: ghcr.io/manticoresoftware/manticoresearch:test-kit-fix_performance-mcl
     container_name: upload-compare-manticore
+    entrypoint: ["searchd"]
+    command: ["--config", "/etc/manticoresearch/manticore.conf", "--nodetach"]
     ports:
       - "19306:9306"
       - "19308:9308"
