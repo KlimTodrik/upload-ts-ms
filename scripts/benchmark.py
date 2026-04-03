@@ -19,7 +19,7 @@ from typing import Any, Iterable
 RESULTS_DIR = Path("results")
 CACHE_DIR = Path(".cache")
 DATASET_NAME = "BeIR/fiqa"
-MANTICORE_AUTO_MODEL = "sentence-transformers/all-MiniLM-L12-v2"
+MANTICORE_AUTO_MODEL = "ts/all-MiniLM-L12-v2"
 TYPESENSE_AUTO_MODEL = "ts/all-MiniLM-L12-v2"
 DEFAULT_COLLECTION = "fiqa_bench"
 DEFAULT_MANTICORE_CONTAINER = "upload-compare-manticore"
