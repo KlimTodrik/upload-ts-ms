@@ -1,6 +1,6 @@
 services:
   manticore:
-    image: ghcr.io/manticoresoftware/manticoresearch:test-kit-2c2d8545-mcl
+    image: ghcr.io/manticoresoftware/manticoresearch:test-kit-f0f2034c-mcl
     container_name: upload-compare-manticore
     entrypoint: ["searchd"]
     command: ["--config", "/etc/manticoresearch/manticore.conf", "--nodetach"]
